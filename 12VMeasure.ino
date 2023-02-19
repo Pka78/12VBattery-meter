@@ -2,82 +2,76 @@
 #include <BLEUtils.h>
 #include <BLEServer.h>
 
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+const int voltagePin = 35; // analog input pin for voltage measurement
+const int ledPin = 2; // pin for the built-in LED
+const float vDivider = 0.176; // voltage divider factor
+const int reportInterval = 60000; // report interval in milliseconds
 
-#define ADC_EN          14
-#define ADC_PIN         34
-#define ADC_ATTEN       ADC_ATTEN_DB_11 // maksimijännite 3.9V
+BLEServer *pServer = NULL;
 
-#define RED_LED_PIN     2
-#define BLUE_LED_PIN    4
-
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
-int voltage = 0;
+class MyServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+    }
+    void onDisconnect(BLEServer* pServer) {
+    }
+};
 
 void setup() {
   Serial.begin(115200);
-  pinMode(ADC_EN, OUTPUT);
-  digitalWrite(ADC_EN, HIGH);
+  pinMode(ledPin, OUTPUT);
 
-  pinMode(RED_LED_PIN, OUTPUT);
-  digitalWrite(RED_LED_PIN, HIGH);
+  // Create the BLE Device
+  BLEDevice::init("12V Battery Meter");
 
-  pinMode(BLUE_LED_PIN, OUTPUT);
-  digitalWrite(BLUE_LED_PIN, LOW);
-
-  BLEDevice::init("ESP32 12V Voltage Sensor");
+  // Create the BLE Server
   pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new BLEServerCallbacks());
+  pServer->setCallbacks(new MyServerCallbacks());
 
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  // Create the BLE Service
+  BLEService *pService = pServer->createService("0x180F");
 
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
+  // Create the BLE Characteristic for voltage measurement
+  BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+                                         BLEUUID("2A19"),
+                                         BLECharacteristic::PROPERTY_READ |
+                                         BLECharacteristic::PROPERTY_NOTIFY
+                                       );
 
   pCharacteristic->addDescriptor(new BLE2902());
 
+  // Start the service
   pService->start();
 
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  // Start advertising
+  BLEAdvertising *pAdvertising = pServer->getAdvertising();
   pAdvertising->addServiceUUID(pService->getUUID());
-  pAdvertising->setScanResponse(false);
+  pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
+
 }
 
 void loop() {
-  if (deviceConnected) {
-    digitalWrite(RED_LED_PIN, LOW);
-
-    voltage = analogRead(ADC_PIN) * 2 / 4095.0 * 12.0;
-    char val[5];
-    sprintf(val, "%d", voltage);
-    pCharacteristic->setValue(val);
-    pCharacteristic->notify();
-
-    digitalWrite(BLUE_LED_PIN, HIGH);
-    delay(500);
-    digitalWrite(BLUE_LED_PIN, LOW);
-  } else {
-    digitalWrite(RED_LED_PIN, HIGH);
+  float voltage = 0.0;
+  int numSamples = 100;
+  for (int i = 0; i < numSamples; i++) {
+    voltage += analogRead(voltagePin);
+    delay(1);
   }
+  voltage /= numSamples;
+  voltage = voltage * vDivider;
+  Serial.printf("Voltage: %.2fV\n", voltage);
 
-  if (deviceConnected != oldDeviceConnected) {
-    if (deviceConnected) {
-      Serial.println("Device connected");
-    } else {
-      Serial.println("Device disconnected");
-    }
-    oldDeviceConnected = deviceConnected;
-  }
+  // blink the LED
+  digitalWrite(ledPin, HIGH);
+  delay(100);
+  digitalWrite(ledPin, LOW);
 
-  delay(60000); // odota yksi minuutti
+  // Update the BLE Characteristic with the current voltage
+  String voltageStr = String(voltage, 2);
+  pServer->updateCharacteristicValue(pCharacteristic->getHandle(), voltageStr.c_str(), voltageStr.length());
+
+  // Wait for the next report interval
+  delay(reportInterval);
 }
